@@ -113,3 +113,5 @@ venv.bak/
 
 # Settings files
 **/settings.yml
+
+docker-compose.yml
