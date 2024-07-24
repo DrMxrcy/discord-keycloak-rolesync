@@ -1,6 +1,7 @@
 import logging
 import os
 import time
+import threading
 
 import discord
 from keycloak import KeycloakAdmin
@@ -16,11 +17,11 @@ logger.setLevel(logging.INFO)
 logger.addHandler(handler)
 
 KeycloakClient = KeycloakAdmin(
-            server_url=os.environ["KEYCLOAK_URL"],
-            username=os.environ["KEYCLOAK_USERNAME"],
-            password=os.environ["KEYCLOAK_PASSWORD"],
-            realm_name=os.environ["KEYCLOAK_REALM"],
-            user_realm_name=os.environ["KEYCLOAK_ADMIN_REALM"])
+    server_url=os.environ["KEYCLOAK_URL"],
+    username=os.environ["KEYCLOAK_USERNAME"],
+    password=os.environ["KEYCLOAK_PASSWORD"],
+    realm_name=os.environ["KEYCLOAK_REALM"],
+    user_realm_name=os.environ["KEYCLOAK_ADMIN_REALM"])
 
 intents = discord.Intents.default()
 intents.members = True
@@ -48,7 +49,7 @@ def sync_user_roles():
                 continue
 
             logger.info("Adding %s (%s) to Keycloak group %s" % (
-                    keycloak_user[0]["username"], discord_user.global_name, group["name"]))
+                keycloak_user[0]["username"], discord_user.global_name, group["name"]))
 
             KeycloakClient.group_user_add(user_id=keycloak_user[0]["id"], group_id=group["id"])
 
@@ -58,7 +59,7 @@ def sync_user_roles():
             if discord_id not in [user.id for user in role.members]:
                 discord_user = DiscordClient.get_guild(role.guild.id).get_member(discord_id)
                 logger.info("Removing %s (%s) from Keycloak group %s" % (
-                        keycloak_user["username"], discord_user.global_name, group["name"]))
+                    keycloak_user["username"], discord_user.global_name, group["name"]))
 
                 KeycloakClient.group_user_remove(user_id=keycloak_user["id"], group_id=group["id"])
 
@@ -94,7 +95,7 @@ def get_linked_groups(client: KeycloakAdmin = None) -> list:
 
     return valid_groups
 
-def get_linked_role(client: discord.client.Client = None, group: dict = None) -> discord.Role | None:
+def get_linked_role(client: discord.Client = None, group: dict = None) -> discord.Role | None:
     guild_id = int(group["attributes"]["discord-guild"][0])
     role_id = int(group["attributes"]["discord-role"][0])
 
@@ -145,6 +146,47 @@ def get_discord_id(client: KeycloakAdmin = None, user_id: str = None) -> int:
 @DiscordClient.event
 async def on_ready():
     logger.info(f'We have logged in as {DiscordClient.user}')
+    sync_user_roles()
+
+@DiscordClient.event
+async def on_member_update(previous, current):
+    if current.id == DiscordClient.user.id:
+        return
+
+    previous_roles = set(previous.roles)
+    current_roles = set(current.roles)
+
+    added_roles = current_roles.difference(previous_roles)
+    removed_roles = previous_roles.difference(current_roles)
+
+    if current_roles == previous_roles:
+        return
+
+    keycloak_user = KeycloakClient.get_users(
+        query={"idpUserId": previous.id, "idpAlias": "discord"})
+
+    if len(keycloak_user) == 0:
+        return
+
+    if len(added_roles) > 0:
+        for role in added_roles:
+            keycloak_group = KeycloakClient.get_groups(
+                query={"q": "discord-role:%s" % role.id, "exact": "true"})
+
+            logger.info('Adding %s (%s) to Keycloak group %s' % (
+                keycloak_user[0]["username"], current.global_name, keycloak_group[0]["name"]))
+
+            KeycloakClient.group_user_add(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
+
+    if len(removed_roles) > 0:
+        for role in removed_roles:
+            keycloak_group = KeycloakClient.get_groups(
+                query={"q": "discord-role:%s" % role.id, "exact": "true"})
+
+            logger.info('Removing %s (%s) from Keycloak group %s' % (
+                keycloak_user[0]["username"], current.global_name, keycloak_group[0]["name"]))
+
+            KeycloakClient.group_user_remove(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
 
 def periodic_sync():
     while True:
@@ -153,6 +195,5 @@ def periodic_sync():
         time.sleep(30)  # Sync interval, adjust as needed
 
 if __name__ == "__main__":
-    import threading
     threading.Thread(target=periodic_sync).start()
     DiscordClient.run(token=os.environ["DISCORD_BOT_TOKEN"], log_handler=handler, log_formatter=formatter)
