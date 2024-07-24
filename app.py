@@ -49,7 +49,7 @@ def sync_user_roles():
                 continue
 
             logger.info("Adding %s (%s) to Keycloak group %s" % (
-                keycloak_user[0]["username"], discord_user.global_name, group["name"]))
+                keycloak_user[0]["username"], discord_user.display_name, group["name"]))
 
             KeycloakClient.group_user_add(user_id=keycloak_user[0]["id"], group_id=group["id"])
 
@@ -58,8 +58,9 @@ def sync_user_roles():
 
             if discord_id not in [user.id for user in role.members]:
                 discord_user = DiscordClient.get_guild(role.guild.id).get_member(discord_id)
-                logger.info("Removing %s (%s) from Keycloak group %s" % (
-                    keycloak_user["username"], discord_user.global_name, group["name"]))
+                if discord_user:
+                    logger.info("Removing %s (%s) from Keycloak group %s" % (
+                        keycloak_user["username"], discord_user.display_name, group["name"]))
 
                 KeycloakClient.group_user_remove(user_id=keycloak_user["id"], group_id=group["id"])
 
@@ -146,7 +147,10 @@ def get_discord_id(client: KeycloakAdmin = None, user_id: str = None) -> int:
 @DiscordClient.event
 async def on_ready():
     logger.info(f'We have logged in as {DiscordClient.user}')
-    sync_user_roles()
+    try:
+        sync_user_roles()
+    except Exception as e:
+        logger.error(f"Error during initial sync: {e}")
 
 @DiscordClient.event
 async def on_member_update(previous, current):
@@ -173,25 +177,30 @@ async def on_member_update(previous, current):
             keycloak_group = KeycloakClient.get_groups(
                 query={"q": "discord-role:%s" % role.id, "exact": "true"})
 
-            logger.info('Adding %s (%s) to Keycloak group %s' % (
-                keycloak_user[0]["username"], current.global_name, keycloak_group[0]["name"]))
+            if keycloak_group:
+                logger.info('Adding %s (%s) to Keycloak group %s' % (
+                    keycloak_user[0]["username"], current.display_name, keycloak_group[0]["name"]))
 
-            KeycloakClient.group_user_add(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
+                KeycloakClient.group_user_add(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
 
     if len(removed_roles) > 0:
         for role in removed_roles:
             keycloak_group = KeycloakClient.get_groups(
                 query={"q": "discord-role:%s" % role.id, "exact": "true"})
 
-            logger.info('Removing %s (%s) from Keycloak group %s' % (
-                keycloak_user[0]["username"], current.global_name, keycloak_group[0]["name"]))
+            if keycloak_group:
+                logger.info('Removing %s (%s) from Keycloak group %s' % (
+                    keycloak_user[0]["username"], current.display_name, keycloak_group[0]["name"]))
 
-            KeycloakClient.group_user_remove(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
+                KeycloakClient.group_user_remove(user_id=keycloak_user[0]["id"], group_id=keycloak_group[0]["id"])
 
 def periodic_sync():
     while True:
         logger.info("Running periodic sync...")
-        sync_user_roles()
+        try:
+            sync_user_roles()
+        except Exception as e:
+            logger.error(f"Error during periodic sync: {e}")
         time.sleep(30)  # Sync interval, adjust as needed
 
 if __name__ == "__main__":
